@@ -274,6 +274,26 @@ namespace MicStreamNative {
         [DllImport("user32.dll", SetLastError = true)]
         public static extern bool DestroyIcon(IntPtr hIcon);
     }
+
+    public static class WindowHelper {
+        private const int SW_SHOWNORMAL = 1;
+        private const int SW_RESTORE = 9;
+
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        public static void ForceShow(IntPtr hWnd) {
+            if (hWnd == IntPtr.Zero) return;
+            ShowWindow(hWnd, IsIconic(hWnd) ? SW_RESTORE : SW_SHOWNORMAL);
+            SetForegroundWindow(hWnd);
+        }
+    }
 }
 "@
 
@@ -1236,8 +1256,12 @@ function Show-ControlPanel {
     if ($script:panelForm.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) {
         $script:panelForm.WindowState = [System.Windows.Forms.FormWindowState]::Normal
     }
+    # Explicitly override STARTUPINFO SW_HIDE inherited from wscript.exe / -WindowStyle Hidden
+    [MicStreamNative.WindowHelper]::ForceShow($script:panelForm.Handle)
+    $script:panelForm.TopMost = $true
     $script:panelForm.Activate()
     $script:panelForm.BringToFront()
+    $script:panelForm.TopMost = $false
 }
 
 # ==================== CONTEXT MENU ====================
