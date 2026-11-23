@@ -202,6 +202,8 @@ function Get-DefaultMicStreamConfig {
             bitrateKbps         = 48
             opusApplication     = 'lowdelay'
             opusFrameDurationMs = 20
+            noiseReduction      = 'off'
+            rnnoiseModelPath    = 'models/bd.rnnn'
         }
         recording = [PSCustomObject]@{
             recordingsDir          = 'recordings'
@@ -350,11 +352,86 @@ function Save-MicStreamConfig {
     Move-Item -LiteralPath $tmpPath -Destination $ConfigPath -Force
 }
 
+function Get-AudioFilterChain {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        $Config,
+        [bool]$ApplyBoost = $true,
+        [string]$BaseDir = ''
+    )
+
+    $mode = 'off'
+    if ($null -ne $Config.audio.PSObject.Properties['noiseReduction'] -and -not [string]::IsNullOrWhiteSpace([string]$Config.audio.noiseReduction)) {
+        $mode = ([string]$Config.audio.noiseReduction).Trim().ToLowerInvariant()
+    }
+    if ($mode -notin @('off', 'light', 'clean', 'voice_ai')) {
+        $mode = 'off'
+    }
+
+    $modelRel = 'models/bd.rnnn'
+    if ($null -ne $Config.audio.PSObject.Properties['rnnoiseModelPath'] -and -not [string]::IsNullOrWhiteSpace([string]$Config.audio.rnnoiseModelPath)) {
+        $modelRel = ([string]$Config.audio.rnnoiseModelPath).Trim().Replace('\', '/')
+    }
+
+    # Safely degrade voice_ai -> clean (FFT) if BaseDir is known and RNNoise model file is absent
+    if ($mode -eq 'voice_ai' -and -not [string]::IsNullOrWhiteSpace($BaseDir)) {
+        $fullModel = if ([System.IO.Path]::IsPathRooted($modelRel)) { $modelRel } else { Join-Path $BaseDir ($modelRel.Replace('/', '\')) }
+        if (-not (Test-Path -LiteralPath $fullModel)) {
+            $mode = 'clean'
+        }
+    }
+
+    $hp = [int]$Config.audio.highpassHz
+    $fMs = [int]$Config.audio.dynaudnormFrameMs
+    $gSize = [int]$Config.audio.dynaudnormGaussSize
+    $mGain = [int]$Config.audio.dynaudnormMaxGain
+    $gentleGain = [Math]::Min(4, $mGain)
+
+    $chain = New-Object System.Collections.Generic.List[string]
+
+    switch ($mode) {
+        'light' {
+            $chain.Add('highpass=f=130')
+            $chain.Add('lowpass=f=7500')
+            if ($ApplyBoost) {
+                $chain.Add("dynaudnorm=f=$($fMs):g=$($gSize):m=$($gentleGain):t=0.02")
+            }
+        }
+        'clean' {
+            $chain.Add('highpass=f=130')
+            $chain.Add('lowpass=f=7800')
+            $chain.Add('afftdn=nr=12:nf=-40:tn=1')
+            if ($ApplyBoost) {
+                $chain.Add("dynaudnorm=f=$($fMs):g=$($gSize):m=$($gentleGain):t=0.02")
+            }
+        }
+        'voice_ai' {
+            $chain.Add('aresample=48000')
+            $chain.Add('highpass=f=120')
+            $chain.Add("arnndn=m=$($modelRel):mix=0.9")
+            $chain.Add('lowpass=f=8000')
+            if ($ApplyBoost) {
+                $chain.Add("dynaudnorm=f=$($fMs):g=$($gSize):m=$($gentleGain):t=0.02")
+            }
+        }
+        default {
+            if ($ApplyBoost) {
+                $chain.Add("highpass=f=$hp")
+                $chain.Add("dynaudnorm=f=$($fMs):g=$($gSize):m=$($mGain)")
+            }
+        }
+    }
+
+    return ($chain.ToArray() -join ',')
+}
+
 function Get-FfmpegArguments {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        $Config
+        $Config,
+        [string]$BaseDir = ''
     )
 
     $micName = [string]$Config.audio.microphoneName
@@ -373,13 +450,10 @@ function Get-FfmpegArguments {
     $argsList.Add('-i')
     $argsList.Add("audio=$micName")
 
-    if ([bool]$Config.audio.enableAmbientBoost) {
-        $hp = [int]$Config.audio.highpassHz
-        $fMs = [int]$Config.audio.dynaudnormFrameMs
-        $gSize = [int]$Config.audio.dynaudnormGaussSize
-        $mGain = [int]$Config.audio.dynaudnormMaxGain
+    $filterChain = Get-AudioFilterChain -Config $Config -ApplyBoost ([bool]$Config.audio.enableAmbientBoost) -BaseDir $BaseDir
+    if (-not [string]::IsNullOrWhiteSpace($filterChain)) {
         $argsList.Add('-af')
-        $argsList.Add("highpass=f=$hp,dynaudnorm=f=$($fMs):g=$($gSize):m=$($mGain)")
+        $argsList.Add($filterChain)
     }
 
     $argsList.Add('-c:a')
@@ -426,7 +500,8 @@ function Get-RecordingArguments {
         [Parameter(Mandatory = $true)]
         [ValidateNotNullOrEmpty()]
         [string]$OutputFilePath,
-        [int]$AutoStopMinutes = 0
+        [int]$AutoStopMinutes = 0,
+        [string]$BaseDir = ''
     )
 
     $micName = [string]$Config.audio.microphoneName
@@ -451,13 +526,10 @@ function Get-RecordingArguments {
         $argsList.Add([string]($AutoStopMinutes * 60))
     }
 
-    if ([bool]$Config.recording.applyAmbientBoost) {
-        $hp = [int]$Config.audio.highpassHz
-        $fMs = [int]$Config.audio.dynaudnormFrameMs
-        $gSize = [int]$Config.audio.dynaudnormGaussSize
-        $mGain = [int]$Config.audio.dynaudnormMaxGain
+    $recFilter = Get-AudioFilterChain -Config $Config -ApplyBoost ([bool]$Config.recording.applyAmbientBoost) -BaseDir $BaseDir
+    if (-not [string]::IsNullOrWhiteSpace($recFilter)) {
         $argsList.Add('-af')
-        $argsList.Add("highpass=f=$hp,dynaudnorm=f=$($fMs):g=$($gSize):m=$($mGain)")
+        $argsList.Add($recFilter)
     }
 
     $fmt = ([string]$Config.recording.format).TrimStart('.').ToLowerInvariant()
@@ -1065,6 +1137,7 @@ Export-ModuleMember -Function @(
     'Merge-ConfigObjects',
     'Get-MicStreamConfig',
     'Save-MicStreamConfig',
+    'Get-AudioFilterChain',
     'Get-FfmpegArguments',
     'New-RecordingFilePath',
     'Get-RecordingArguments',

@@ -596,6 +596,11 @@ function Write-IpcState {
         $cfOn = ($null -ne $script:cfProc -and -not $script:cfProc.HasExited)
         $dashOn = ($null -ne $script:dashProc -and -not $script:dashProc.HasExited)
 
+        $rnModelRel = if ($null -ne $script:config.audio.PSObject.Properties['rnnoiseModelPath']) { [string]$script:config.audio.rnnoiseModelPath } else { 'models/bd.rnnn' }
+        $rnFull = if ([System.IO.Path]::IsPathRooted($rnModelRel)) { $rnModelRel } else { Join-Path $scriptDir ($rnModelRel.Replace('/', '\')) }
+        $rnAvail = Test-Path -LiteralPath $rnFull
+        $nrMode = if ($null -ne $script:config.audio.PSObject.Properties['noiseReduction']) { [string]$script:config.audio.noiseReduction } else { 'off' }
+
         $payload = [ordered]@{
             updatedAt             = (Get-Date).ToUniversalTime().ToString('o')
             streamState           = $script:streamState
@@ -607,6 +612,9 @@ function Write-IpcState {
             recActiveLimitMinutes = [int]$script:recActiveLimitMinutes
             recOutputFile         = [string]$script:recOutputFile
             ambientBoost          = [bool]$script:config.audio.enableAmbientBoost
+            noiseReduction        = $nrMode
+            opusApplication       = [string]$script:config.audio.opusApplication
+            rnnoiseAvailable      = [bool]$rnAvail
             microphoneName        = [string]$script:config.audio.microphoneName
             microphones           = @($script:cachedMicrophones)
             cloudflaredEnabled    = [bool]$script:config.network.cloudflared.enabled
@@ -883,7 +891,7 @@ function Start-FfmpegProcess {
     Invoke-LogRotation -LogPath $ffLogPath -MaxBytes ([long]$script:config.paths.maxLogSizeBytes)
 
     try {
-        $argArray = @(Get-FfmpegArguments -Config $script:config)
+        $argArray = @(Get-FfmpegArguments -Config $script:config -BaseDir $scriptDir)
         $argString = Join-NativeArguments -Arguments $argArray
         Write-DaemonLog -Level 'INFO' -Message "Starting ffmpeg stream: $argString"
 
@@ -1033,7 +1041,7 @@ function Start-AudioRecording {
     Invoke-LogRotation -LogPath $recLog -MaxBytes ([long]$script:config.paths.maxLogSizeBytes)
 
     try {
-        $argArray = @(Get-RecordingArguments -Config $script:config -OutputFilePath $outFile -AutoStopMinutes $limitMinutes)
+        $argArray = @(Get-RecordingArguments -Config $script:config -OutputFilePath $outFile -AutoStopMinutes $limitMinutes -BaseDir $scriptDir)
         $argString = Join-NativeArguments -Arguments $argArray
         Write-DaemonLog -Level 'INFO' -Message "Starting recording -> $outFile (autoStopMin=$limitMinutes)"
 
@@ -1189,6 +1197,37 @@ function Invoke-IpcCommands {
                         Save-MicStreamConfig -Config $script:config -ConfigPath $script:configPath
                         Write-DaemonLog -Level 'INFO' -Message "Remote Ambient Boost set to $en."
                         if ($script:desiredRunning) { Restart-FfmpegOnly }
+                    }
+                }
+                'set_noise_reduction' {
+                    if ($null -ne $payload -and $null -ne $payload.PSObject.Properties['mode']) {
+                        $mode = ([string]$payload.mode).Trim().ToLowerInvariant()
+                        if ($mode -in @('off', 'light', 'clean', 'voice_ai')) {
+                            $script:config.audio.noiseReduction = $mode
+                            Save-MicStreamConfig -Config $script:config -ConfigPath $script:configPath
+                            Write-DaemonLog -Level 'INFO' -Message "Remote Noise Reduction set to $mode."
+                            if ($script:desiredRunning) { Restart-FfmpegOnly }
+                        }
+                        else {
+                            $ok = $false
+                            $errMsg = "Invalid noiseReduction mode: $mode"
+                        }
+                    }
+                }
+                'set_opus_mode' {
+                    if ($null -ne $payload -and $null -ne $payload.PSObject.Properties['application']) {
+                        $appMode = ([string]$payload.application).Trim().ToLowerInvariant()
+                        if ($appMode -in @('lowdelay', 'voip')) {
+                            $script:config.audio.opusApplication = $appMode
+                            $script:voipItem.Checked = ($appMode -eq 'voip')
+                            Save-MicStreamConfig -Config $script:config -ConfigPath $script:configPath
+                            Write-DaemonLog -Level 'INFO' -Message "Remote Opus application set to $appMode."
+                            if ($script:desiredRunning) { Restart-FfmpegOnly }
+                        }
+                        else {
+                            $ok = $false
+                            $errMsg = "Invalid opusApplication mode: $appMode"
+                        }
                     }
                 }
                 'set_microphone' {
@@ -1520,6 +1559,14 @@ $script:boostItem.CheckOnClick = $true
 $script:boostItem.Checked = [bool]$script:config.audio.enableAmbientBoost
 [void]$script:menu.Items.Add($script:boostItem)
 
+$script:noiseMenu = New-Object System.Windows.Forms.ToolStripMenuItem('Noise Reduction (Optional)')
+[void]$script:menu.Items.Add($script:noiseMenu)
+
+$script:voipItem = New-Object System.Windows.Forms.ToolStripMenuItem('Voice-Tuned Opus (VoIP Mode)')
+$script:voipItem.CheckOnClick = $true
+$script:voipItem.Checked = ([string]$script:config.audio.opusApplication -eq 'voip')
+[void]$script:menu.Items.Add($script:voipItem)
+
 $script:micMenu = New-Object System.Windows.Forms.ToolStripMenuItem('Microphone')
 [void]$script:menu.Items.Add($script:micMenu)
 
@@ -1615,9 +1662,38 @@ function Update-EndpointsSubmenu {
     }
 }
 
+function Update-NoiseReductionSubmenu {
+    $script:noiseMenu.DropDownItems.Clear()
+    $curMode = if ($null -ne $script:config.audio.PSObject.Properties['noiseReduction']) { ([string]$script:config.audio.noiseReduction).ToLowerInvariant() } else { 'off' }
+    $presets = @(
+        @{ Label = 'Off (Original)';                  Mode = 'off' },
+        @{ Label = 'Light (Bandpass + Anti-Hiss)';    Mode = 'light' },
+        @{ Label = 'Clean (FFT Adaptive Denoise)';    Mode = 'clean' },
+        @{ Label = 'Voice AI (RNNoise Neural)';       Mode = 'voice_ai' }
+    )
+    foreach ($p in $presets) {
+        $item = New-Object System.Windows.Forms.ToolStripMenuItem($p.Label)
+        $item.Checked = ($curMode -eq $p.Mode)
+        $item.Tag = $p.Mode
+        $item.Add_Click({
+            param($sender, $e)
+            $sel = [string]$sender.Tag
+            if ($sel -ne [string]$script:config.audio.noiseReduction) {
+                $script:config.audio.noiseReduction = $sel
+                Save-MicStreamConfig -Config $script:config -ConfigPath $script:configPath
+                Write-DaemonLog -Level 'INFO' -Message "Noise Reduction set to: $sel"
+                Write-IpcState
+                if ($script:desiredRunning) { Restart-FfmpegOnly }
+            }
+        })
+        [void]$script:noiseMenu.DropDownItems.Add($item)
+    }
+}
+
 $script:menu.Add_Opening({
     try {
         Update-AutoStopSubmenu
+        Update-NoiseReductionSubmenu
         Update-MicrophoneSubmenu
         Update-EndpointsSubmenu
         Update-AllUiState
@@ -1644,6 +1720,16 @@ $script:boostItem.Add_Click({
     $script:config.audio.enableAmbientBoost = [bool]$script:boostItem.Checked
     Save-MicStreamConfig -Config $script:config -ConfigPath $script:configPath
     Write-DaemonLog -Level 'INFO' -Message "Ambient Boost set to $($script:config.audio.enableAmbientBoost)."
+    Write-IpcState
+    if ($script:desiredRunning) {
+        Restart-FfmpegOnly
+    }
+})
+
+$script:voipItem.Add_Click({
+    $script:config.audio.opusApplication = if ([bool]$script:voipItem.Checked) { 'voip' } else { 'lowdelay' }
+    Save-MicStreamConfig -Config $script:config -ConfigPath $script:configPath
+    Write-DaemonLog -Level 'INFO' -Message "Opus application set to $($script:config.audio.opusApplication)."
     Write-IpcState
     if ($script:desiredRunning) {
         Restart-FfmpegOnly

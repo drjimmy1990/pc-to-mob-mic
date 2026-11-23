@@ -2,6 +2,7 @@
 mediamtx.exe
 mediamtx.upstream.yml
 cloudflared.exe
+models/
 *.zip
 
 # Local runtime configuration & secrets

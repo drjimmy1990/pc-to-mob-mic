@@ -178,6 +178,30 @@
             </button>
           </div>
 
+          <div class="dsp-block">
+            <div class="autostop-head">
+              <span class="micro-label">NOISE REDUCTION (OPTIONAL)</span>
+              <span id="noiseModeBadge" class="mono-val">OFF</span>
+            </div>
+            <div id="noisePills" class="pill-grid" role="group" aria-label="Noise reduction presets">
+              <button type="button" class="pill-btn active" data-noise="off">OFF</button>
+              <button type="button" class="pill-btn" data-noise="light">LIGHT</button>
+              <button type="button" class="pill-btn" data-noise="clean">CLEAN</button>
+              <button type="button" class="pill-btn" data-noise="voice_ai">VOICE AI</button>
+            </div>
+            <p id="noiseModeDesc" class="dsp-hint">Original unprocessed noise floor (lowest latency).</p>
+          </div>
+
+          <div class="dsp-row">
+            <div class="dsp-info">
+              <strong>Voice-Tuned Opus (VoIP)</strong>
+              <span>Optional speech-clarity codec profile (+2.5 ms)</span>
+            </div>
+            <button id="btnOpusToggle" type="button" class="hw-switch" role="switch" aria-checked="false">
+              <span class="hw-switch-knob"></span>
+            </button>
+          </div>
+
           <div class="dsp-select-block">
             <label for="micSelect" class="micro-label">ACTIVE LAPTOP MICROPHONE</label>
             <select id="micSelect" class="hw-select"></select>

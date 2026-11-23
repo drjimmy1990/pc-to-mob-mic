@@ -11,7 +11,9 @@
     "channels": 1,
     "bitrateKbps": 48,
     "opusApplication": "lowdelay",
-    "opusFrameDurationMs": 20
+    "opusFrameDurationMs": 20,
+    "noiseReduction": "off",
+    "rnnoiseModelPath": "models/bd.rnnn"
   },
   "recording": {
     "recordingsDir": "recordings",

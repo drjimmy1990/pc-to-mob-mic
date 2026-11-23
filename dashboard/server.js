@@ -286,6 +286,9 @@ function createAppServer(options = {}) {
       recActiveLimitMinutes: 0,
       recOutputFile: '',
       ambientBoost: cfg?.audio?.enableAmbientBoost !== false,
+      noiseReduction: cfg?.audio?.noiseReduction || 'off',
+      opusApplication: cfg?.audio?.opusApplication || 'lowdelay',
+      rnnoiseAvailable: fs.existsSync(path.join(repoRoot, cfg?.audio?.rnnoiseModelPath || 'models/bd.rnnn')),
       microphoneName: cfg?.audio?.microphoneName || '',
       microphones: cfg?.audio?.microphoneName ? [cfg.audio.microphoneName] : [],
       cloudflaredEnabled: Boolean(cfg?.network?.cloudflared?.enabled),
@@ -603,6 +606,28 @@ function createAppServer(options = {}) {
         const body = await readJsonBody(req);
         const enabled = Boolean(body.enabled);
         const r = await sendTrayCommand('set_boost', { enabled });
+        return sendJson(res, r.ok === false ? 500 : 200, { ...r, state: readDaemonState() });
+      }
+
+      if (req.method === 'POST' && pathname === '/api/audio/noise') {
+        if (!requireCsrf(req, res)) return;
+        const body = await readJsonBody(req);
+        const mode = String(body.mode || '').trim().toLowerCase();
+        if (!['off', 'light', 'clean', 'voice_ai'].includes(mode)) {
+          return sendJson(res, 400, { error: 'mode must be off, light, clean, or voice_ai' });
+        }
+        const r = await sendTrayCommand('set_noise_reduction', { mode });
+        return sendJson(res, r.ok === false ? 500 : 200, { ...r, state: readDaemonState() });
+      }
+
+      if (req.method === 'POST' && pathname === '/api/audio/opus') {
+        if (!requireCsrf(req, res)) return;
+        const body = await readJsonBody(req);
+        const application = String(body.application || '').trim().toLowerCase();
+        if (!['lowdelay', 'voip'].includes(application)) {
+          return sendJson(res, 400, { error: 'application must be lowdelay or voip' });
+        }
+        const r = await sendTrayCommand('set_opus_mode', { application });
         return sendJson(res, r.ok === false ? 500 : 200, { ...r, state: readDaemonState() });
       }
 

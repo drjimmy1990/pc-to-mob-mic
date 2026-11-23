@@ -21,6 +21,7 @@
     linkStatusText: document.getElementById('linkStatusText'),
     dbReadout: document.getElementById('dbReadout'),
     vuCanvas: document.getElementById('vuCanvas'),
+    codecMeta: document.getElementById('codecMeta'),
     recOledStatus: document.getElementById('recOledStatus'),
     liveAudio: document.getElementById('liveAudio'),
 
@@ -44,6 +45,10 @@
 
     daemonPill: document.getElementById('daemonPill'),
     btnBoostToggle: document.getElementById('btnBoostToggle'),
+    noiseModeBadge: document.getElementById('noiseModeBadge'),
+    noisePills: document.getElementById('noisePills'),
+    noiseModeDesc: document.getElementById('noiseModeDesc'),
+    btnOpusToggle: document.getElementById('btnOpusToggle'),
     micSelect: document.getElementById('micSelect'),
 
     vaultMeta: document.getElementById('vaultMeta'),
@@ -541,6 +546,33 @@
     // Ambient Boost switch
     el.btnBoostToggle.setAttribute('aria-checked', String(Boolean(state.ambientBoost)));
 
+    // Noise Reduction selector
+    const nr = String(state.noiseReduction || 'off').toLowerCase();
+    const nrMeta = {
+      off: { label: 'OFF', desc: 'Original unprocessed noise floor (lowest latency).' },
+      light: { label: 'LIGHT', desc: '130–7500 Hz speech bandpass + anti-hiss gain cap (0 ms extra).' },
+      clean: { label: 'CLEAN FFT', desc: 'FFmpeg adaptive FFT broadband denoiser — reduces fan & AC hiss.' },
+      voice_ai: {
+        label: state.rnnoiseAvailable === false ? 'VOICE AI (FFT)' : 'VOICE AI',
+        desc: state.rnnoiseAvailable === false
+          ? 'RNNoise model missing (falling back to Clean FFT). Run Install-RnnoiseModel.ps1.'
+          : 'Neural RNNoise AI speech isolation — removes laptop fan & room static.',
+      },
+    };
+    const info = nrMeta[nr] || nrMeta.off;
+    el.noiseModeBadge.textContent = info.label;
+    el.noiseModeDesc.textContent = info.desc;
+    el.noisePills.querySelectorAll('.pill-btn').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.noise === nr);
+    });
+
+    // Opus application profile (lowdelay vs voip)
+    const opusApp = String(state.opusApplication || 'lowdelay').toLowerCase();
+    el.btnOpusToggle.setAttribute('aria-checked', String(opusApp === 'voip'));
+    if (el.codecMeta) {
+      el.codecMeta.textContent = `OPUS 48kHz MONO · ${opusApp.toUpperCase()}${nr !== 'off' ? ' · ' + info.label : ''}`;
+    }
+
     // Microphone dropdown (only rebuild if list changed)
     const mics = Array.isArray(state.microphones) && state.microphones.length
       ? state.microphones
@@ -857,6 +889,50 @@
       showToast(err.message);
     } finally {
       el.btnBoostToggle.disabled = false;
+    }
+  });
+
+  el.noisePills.addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('.pill-btn');
+    if (!btn || btn.disabled) return;
+    const mode = btn.dataset.noise;
+    if (!mode) return;
+    const allBtns = el.noisePills.querySelectorAll('.pill-btn');
+    allBtns.forEach((b) => { b.disabled = true; });
+    try {
+      const res = await apiFetch('/api/audio/noise', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.ok === false) throw new Error(data.error || 'Noise preset update failed');
+      if (data.state) applyStatus(data.state);
+      showToast(`Noise reduction: ${mode.replace('_', ' ').toUpperCase()}`);
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      allBtns.forEach((b) => { b.disabled = false; });
+    }
+  });
+
+  el.btnOpusToggle.addEventListener('click', async () => {
+    const nextApp = el.btnOpusToggle.getAttribute('aria-checked') === 'true' ? 'lowdelay' : 'voip';
+    el.btnOpusToggle.disabled = true;
+    try {
+      const res = await apiFetch('/api/audio/opus', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ application: nextApp }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.ok === false) throw new Error(data.error || 'Opus mode update failed');
+      if (data.state) applyStatus(data.state);
+      showToast(`Opus mode: ${nextApp.toUpperCase()}`);
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      el.btnOpusToggle.disabled = false;
     }
   });
 

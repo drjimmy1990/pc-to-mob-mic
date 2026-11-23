@@ -132,6 +132,8 @@ test('Dashboard server end-to-end: auth, CSRF, recordings Range/download/delete,
           streamState: 'LIVE',
           isRecording: cmd.action === 'start_record',
           recAutoStopMinutes: cmd.payload?.autoStopMinutes || 0,
+          noiseReduction: cmd.action === 'set_noise_reduction' ? cmd.payload?.mode : 'off',
+          opusApplication: cmd.action === 'set_opus_mode' ? cmd.payload?.application : 'lowdelay',
         })
       );
       fs.writeFileSync(path.join(ipcDir, `res_${cmd.id}.json`), JSON.stringify({ ok: true }));
@@ -202,6 +204,30 @@ test('Dashboard server end-to-end: auth, CSRF, recordings Range/download/delete,
     assert.equal(recJson.ok, true);
     assert.equal(recJson.state.isRecording, true);
     assert.equal(recJson.state.recAutoStopMinutes, 15);
+
+    // 7b. Optional Noise Reduction & Opus VoIP endpoints validate & round-trip via IPC
+    const badNoise = await fetch(`${baseUrl}/api/audio/noise`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json', 'X-Requested-With': 'MicStream' },
+      body: JSON.stringify({ mode: 'invalid_mode' }),
+    });
+    assert.equal(badNoise.status, 400);
+
+    const goodNoise = await fetch(`${baseUrl}/api/audio/noise`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json', 'X-Requested-With': 'MicStream' },
+      body: JSON.stringify({ mode: 'voice_ai' }),
+    });
+    assert.equal(goodNoise.status, 200);
+    assert.equal((await goodNoise.json()).state.noiseReduction, 'voice_ai');
+
+    const opusRes = await fetch(`${baseUrl}/api/audio/opus`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json', 'X-Requested-With': 'MicStream' },
+      body: JSON.stringify({ application: 'voip' }),
+    });
+    assert.equal(opusRes.status, 200);
+    assert.equal((await opusRes.json()).state.opusApplication, 'voip');
 
     // 8. Recordings list + HTTP 206 Range + download header + delete
     const listRes = await fetch(`${baseUrl}/api/recordings`, { headers: { Cookie: cookie } });

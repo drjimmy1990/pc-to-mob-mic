@@ -105,6 +105,33 @@ Describe 'FFmpeg Low-Latency Argument Builder' {
         $args = Get-FfmpegArguments -Config $cfg
         ($args -contains '-af') | Should Be $false
     }
+
+    It 'builds light, clean (FFT), and voice_ai (RNNoise) optional noise-reduction chains' {
+        $cfg = Get-DefaultMicStreamConfig
+
+        $cfg.audio.noiseReduction = 'light'
+        $light = Get-AudioFilterChain -Config $cfg -ApplyBoost $true
+        $light | Should Be 'highpass=f=130,lowpass=f=7500,dynaudnorm=f=50:g=5:m=4:t=0.02'
+
+        $cfg.audio.noiseReduction = 'clean'
+        $clean = Get-AudioFilterChain -Config $cfg -ApplyBoost $true
+        $clean | Should Be 'highpass=f=130,lowpass=f=7800,afftdn=nr=12:nf=-40:tn=1,dynaudnorm=f=50:g=5:m=4:t=0.02'
+
+        $cfg.audio.noiseReduction = 'voice_ai'
+        $ai = Get-AudioFilterChain -Config $cfg -ApplyBoost $false
+        $ai | Should Be 'aresample=48000,highpass=f=120,arnndn=m=models/bd.rnnn:mix=0.9,lowpass=f=8000'
+
+        # Verify graceful fallback to clean (FFT) if BaseDir has no models/bd.rnnn
+        $emptyDir = Join-Path ([System.IO.Path]::GetTempPath()) ("micstream_nomodel_" + [Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $emptyDir -Force | Out-Null
+        try {
+            $fallback = Get-AudioFilterChain -Config $cfg -ApplyBoost $false -BaseDir $emptyDir
+            $fallback | Should Be 'highpass=f=130,lowpass=f=7800,afftdn=nr=12:nf=-40:tn=1'
+        }
+        finally {
+            Remove-Item -LiteralPath $emptyDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 Describe 'Config Load, Merge, and Atomic Save' {
