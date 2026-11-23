@@ -1,0 +1,19 @@
+# Runtime binaries and downloads
+mediamtx.exe
+mediamtx.upstream.yml
+cloudflared.exe
+*.zip
+
+# Local runtime configuration & secrets
+mediamtx.yml
+config.json
+cloudflared.token
+vps/coturn/turnserver.conf
+
+# Runtime logs, recordings, and temporary artifacts
+logs/
+recordings/
+*.log
+.tmp/
+auto.crt
+auto.key

@@ -1,0 +1,73 @@
+###############################################
+# MediaMTX Hardened Multi-Transport Configuration
+# Seeded to mediamtx.yml by scripts\Install-MediaMTX.ps1
+# Run .\scripts\Set-StreamPassword.ps1 before first launch.
+###############################################
+
+logLevel: warn
+logDestinations: [file]
+logFile: logs/mediamtx.log
+
+# Disable unused control/debug endpoints
+api: no
+metrics: no
+pprof: no
+playback: no
+
+# Lock RTSP ingest strictly to localhost TCP
+rtsp: yes
+rtspTransports: [tcp]
+rtspAddress: 127.0.0.1:8554
+
+# Disable unused streaming protocols
+rtmp: no
+hls: no
+srt: no
+moq: no
+
+# WebRTC signaling (HTTP/WHEP) and SRTP media (UDP)
+webrtc: yes
+webrtcAddress: :8889
+webrtcEncryption: no
+webrtcAllowOrigins: ['*']
+# Trust local reverse proxies (Cloudflare Tunnel cloudflared / Tailscale Serve)
+webrtcTrustedProxies: ['127.0.0.1', '::1']
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: ''
+webrtcIPsFromInterfaces: yes
+# Overridden dynamically at launch via MTX_WEBRTCIPSFROMINTERFACESLIST when
+# config.json network.autoFilterInterfaces is true
+webrtcIPsFromInterfacesList: []
+webrtcAdditionalHosts: []
+webrtcHandshakeTimeout: 10s
+
+# Optional STUN/TURN servers (REQUIRED for Cloudflare Tunnel over cellular/CGNAT)
+# Example:
+# webrtcICEServers2:
+#   - url: turns:turn.example.com:443?transport=tcp
+#     username: 'YOUR_TURN_USER'
+#     password: 'YOUR_TURN_PASSWORD'
+webrtcICEServers2: []
+
+# Internal Access Control List
+authMethod: internal
+authInternalUsers:
+  # 1. Local FFmpeg publisher (restricted to loopback interface)
+  - user: any
+    pass: ''
+    ips: ['127.0.0.1', '::1']
+    permissions:
+      - action: publish
+        path: mic
+
+  # 2. Remote mobile listener credentials (SHA-256 base64 hash set via Set-StreamPassword.ps1)
+  - user: admin
+    pass: 'REPLACE_BY_RUNNING_Set-StreamPassword.ps1'
+    ips: []
+    permissions:
+      - action: read
+        path: mic
+
+paths:
+  mic:
+    source: publisher

@@ -1,0 +1,40 @@
+# Hardened coturn configuration for MicStream WebRTC TURN relay
+# Copy this file to turnserver.conf on your Ubuntu VPS and replace:
+#   1. external-ip  -> your VPS public IPv4 address
+#   2. realm        -> your domain (e.g. turn.yourdomain.com)
+#   3. static-auth-secret -> output of: openssl rand -hex 32
+
+listening-port=3478
+min-port=49152
+max-port=49252
+
+# Required for MediaMTX username: AUTH_SECRET time-limited HMAC tokens
+fingerprint
+use-auth-secret
+static-auth-secret=REPLACE_WITH_OPENSSL_RAND_HEX_32
+
+realm=turn.yourdomain.com
+external-ip=YOUR_VPS_PUBLIC_IP
+
+# Hardening: prevent open relay abuse against VPS localhost or private LANs
+no-multicast-peers
+no-cli
+no-tlsv1
+no-tlsv1_1
+stale-nonce=600
+total-quota=100
+
+denied-peer-ip=0.0.0.0-0.255.255.255
+denied-peer-ip=10.0.0.0-10.255.255.255
+denied-peer-ip=100.64.0.0-100.127.255.255
+denied-peer-ip=127.0.0.0-127.255.255.255
+denied-peer-ip=169.254.0.0-169.254.255.255
+denied-peer-ip=172.16.0.0-172.31.255.255
+denied-peer-ip=192.0.0.0-192.0.0.255
+denied-peer-ip=192.168.0.0-192.168.255.255
+denied-peer-ip=::1
+denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+
+# Log to stdout for `docker compose logs`
+simple-log
+log-file=stdout

@@ -1,0 +1,75 @@
+{
+  "audio": {
+    "microphoneName": "Microphone Array (Realtek(R) Audio)",
+    "enableAmbientBoost": true,
+    "audioBufferSizeMs": 50,
+    "highpassHz": 100,
+    "dynaudnormFrameMs": 50,
+    "dynaudnormGaussSize": 5,
+    "dynaudnormMaxGain": 10,
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitrateKbps": 48,
+    "opusApplication": "lowdelay",
+    "opusFrameDurationMs": 20
+  },
+  "recording": {
+    "recordingsDir": "recordings",
+    "format": "mp3",
+    "bitrateKbps": 96,
+    "applyAmbientBoost": true,
+    "defaultAutoStopMinutes": 0,
+    "hotkey": {
+      "modifiers": 6,
+      "virtualKey": 121,
+      "label": "Ctrl+Shift+F10"
+    }
+  },
+  "paths": {
+    "ffmpegPath": "ffmpeg",
+    "mediamtxExe": "mediamtx.exe",
+    "mediamtxConfig": "mediamtx.yml",
+    "logDir": "logs",
+    "maxLogSizeBytes": 2097152
+  },
+  "stream": {
+    "rtspHost": "127.0.0.1",
+    "rtspPort": 8554,
+    "webrtcPort": 8889,
+    "webrtcUdpPort": 8189,
+    "streamPath": "mic"
+  },
+  "network": {
+    "autoFilterInterfaces": true,
+    "excludeInterfacePatterns": [
+      "*VMware*",
+      "*vEthernet*",
+      "*WSL*",
+      "*Hyper-V*",
+      "*ProtonVPN*",
+      "*Surfshark*",
+      "*OpenVPN*",
+      "*VeePN*",
+      "*Loopback*",
+      "*Bluetooth*"
+    ],
+    "publicUrl": "",
+    "cloudflared": {
+      "enabled": false,
+      "exePath": "cloudflared.exe",
+      "tokenFile": "cloudflared.token"
+    }
+  },
+  "hotkey": {
+    "modifiers": 6,
+    "virtualKey": 120,
+    "label": "Ctrl+Shift+F9"
+  },
+  "watchdog": {
+    "intervalMs": 5000,
+    "rtspReadyTimeoutMs": 5000,
+    "startupVerifyMs": 1200,
+    "maxConsecutiveFailures": 5,
+    "backoffSeconds": [2, 5, 15, 30, 60]
+  }
+}
