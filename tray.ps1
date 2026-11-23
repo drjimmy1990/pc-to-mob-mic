@@ -346,6 +346,14 @@ function Get-RecordingsDirPath {
     return $dir
 }
 
+function Get-IpcDirPath {
+    $dir = Join-Path (Get-LogDirPath) '.ipc'
+    if (-not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    return $dir
+}
+
 function Write-DaemonLog {
     param(
         [ValidateSet('INFO', 'WARN', 'ERROR')]
@@ -369,6 +377,9 @@ $script:mtxProc = $null
 $script:ffProc = $null
 $script:cfProc = $null
 $script:recProc = $null
+$script:dashProc = $null
+$script:cachedMicrophones = @([string]$script:config.audio.microphoneName)
+$script:lastIpcWrite = [DateTime]::MinValue
 
 $script:desiredRunning = $false
 $script:streamState = 'Stopped'
@@ -543,11 +554,11 @@ function Update-AllUiState {
 
         if ($cfOn) {
             $pubUrl = [string]$script:config.network.publicUrl
-            $script:lblTunnelStatus.Text = if ($pubUrl) { "Tunnel: Connected ($pubUrl)" } else { 'Tunnel: Connected' }
+            $script:lblTunnelStatus.Text = if ($pubUrl) { "Tunnel: Online ($pubUrl)" } else { 'Tunnel: Online' }
             $script:lblTunnelStatus.ForeColor = [System.Drawing.Color]::ForestGreen
         }
         elseif ([bool]$script:config.network.cloudflared.enabled) {
-            $script:lblTunnelStatus.Text = 'Tunnel: Enabled (starts automatically with stream)'
+            $script:lblTunnelStatus.Text = 'Tunnel: Connecting (check 5-Configure-Remote.bat if needed)'
             $script:lblTunnelStatus.ForeColor = [System.Drawing.Color]::SteelBlue
         }
         else {
@@ -577,6 +588,52 @@ function Update-AllUiState {
     }
 }
 
+function Write-IpcState {
+    try {
+        $ipcDir = Get-IpcDirPath
+        $stateFile = Join-Path $ipcDir 'state.json'
+        $tmpFile = "$stateFile.tmp"
+        $cfOn = ($null -ne $script:cfProc -and -not $script:cfProc.HasExited)
+        $dashOn = ($null -ne $script:dashProc -and -not $script:dashProc.HasExited)
+
+        $payload = [ordered]@{
+            updatedAt             = (Get-Date).ToUniversalTime().ToString('o')
+            streamState           = $script:streamState
+            streamDetail          = $script:streamDetail
+            desiredRunning        = [bool]$script:desiredRunning
+            isRecording           = [bool]$script:isRecording
+            recStartTimeUtc       = if ($script:isRecording -and $script:recStartTime -gt [DateTime]::MinValue) { $script:recStartTime.ToUniversalTime().ToString('o') } else { $null }
+            recAutoStopMinutes    = [int]$script:recAutoStopMinutes
+            recActiveLimitMinutes = [int]$script:recActiveLimitMinutes
+            recOutputFile         = [string]$script:recOutputFile
+            ambientBoost          = [bool]$script:config.audio.enableAmbientBoost
+            microphoneName        = [string]$script:config.audio.microphoneName
+            microphones           = @($script:cachedMicrophones)
+            cloudflaredEnabled    = [bool]$script:config.network.cloudflared.enabled
+            cloudflaredActive     = [bool]$cfOn
+            dashboardActive       = [bool]$dashOn
+            publicUrl             = [string]$script:config.network.publicUrl
+            streamPath            = [string]$script:config.stream.streamPath
+        }
+
+        $json = $payload | ConvertTo-Json -Depth 5
+        [System.IO.File]::WriteAllText($tmpFile, $json, (New-Object System.Text.UTF8Encoding($false)))
+        Move-Item -LiteralPath $tmpFile -Destination $stateFile -Force
+        $script:lastIpcWrite = Get-Date
+    }
+    catch { }
+}
+
+function Update-CachedMicrophones {
+    try {
+        $devs = @(Get-DShowAudioDevices -FfmpegPath ([string]$script:config.paths.ffmpegPath) -BaseDir $scriptDir)
+        if ($devs.Count -gt 0) {
+            $script:cachedMicrophones = @($devs | ForEach-Object { [string]$_.Name })
+        }
+    }
+    catch { }
+}
+
 function Set-StreamState {
     param(
         [ValidateSet('Stopped', 'Starting', 'LIVE', 'Recovering', 'Error')]
@@ -586,6 +643,7 @@ function Set-StreamState {
     $script:streamState = $State
     $script:streamDetail = $Detail
     Update-AllUiState
+    Write-IpcState
 }
 
 # ==================== PROCESS SUPERVISION ====================
@@ -633,6 +691,54 @@ function Stop-CloudflaredProcess {
     finally {
         try { $script:cfProc.Dispose() } catch { }
         $script:cfProc = $null
+    }
+}
+
+function Stop-DashboardProcess {
+    if ($null -eq $script:dashProc) { return }
+    try {
+        $dPid = $script:dashProc.Id
+        $script:dashProc.StopGracefully(1000)
+        Write-DaemonLog -Level 'INFO' -Message "Stopped Web Dashboard server (PID=$dPid)."
+    }
+    catch {
+        Write-DaemonLog -Level 'WARN' -Message "Warning while stopping dashboard server: $($_.Exception.Message)"
+    }
+    finally {
+        try { $script:dashProc.Dispose() } catch { }
+        $script:dashProc = $null
+    }
+}
+
+function Start-DashboardProcess {
+    if (-not [bool]$script:config.dashboard.enabled) { return $false }
+    if ($null -ne $script:dashProc -and -not $script:dashProc.HasExited) { return $true }
+
+    $serverJs = Join-Path $scriptDir 'dashboard\server.js'
+    if (-not (Test-Path -LiteralPath $serverJs)) {
+        Write-DaemonLog -Level 'WARN' -Message "Dashboard server script not found at $serverJs."
+        return $false
+    }
+
+    $nodeExe = Resolve-ExecutablePath -ConfiguredPath ([string]$script:config.dashboard.nodePath) -BaseDir $scriptDir
+    if (-not $nodeExe) {
+        Write-DaemonLog -Level 'WARN' -Message 'Node.js not found; Web Dashboard will not start.'
+        return $false
+    }
+
+    $dashLog = Join-Path (Get-LogDirPath) 'dashboard.log'
+    Invoke-LogRotation -LogPath $dashLog -MaxBytes ([long]$script:config.paths.maxLogSizeBytes)
+
+    try {
+        $proc = [MicStreamNative.ManagedLogProcess]::Start($nodeExe, (Format-NativeArgument -Value $serverJs), $scriptDir, $dashLog, $false)
+        [void]$script:job.AddProcess($proc.Handle)
+        $script:dashProc = $proc
+        Write-DaemonLog -Level 'INFO' -Message "Started Web Dashboard server (PID=$($proc.Id), port=$($script:config.dashboard.port))."
+        return $true
+    }
+    catch {
+        Write-DaemonLog -Level 'ERROR' -Message "Failed to launch Web Dashboard server: $($_.Exception.Message)"
+        return $false
     }
 }
 
@@ -823,7 +929,6 @@ function Start-Stream {
 
         if (-not (Start-MtxProcess)) {
             $script:desiredRunning = $false
-            Stop-CloudflaredProcess
             Stop-FfmpegProcess
             Stop-MtxProcess
             Set-StreamState -State 'Error' -Detail 'MediaMTX failed'
@@ -832,7 +937,6 @@ function Start-Stream {
 
         if (-not (Start-FfmpegProcess)) {
             $script:desiredRunning = $false
-            Stop-CloudflaredProcess
             Stop-FfmpegProcess
             Stop-MtxProcess
             Set-StreamState -State 'Error' -Detail 'FFmpeg failed'
@@ -861,11 +965,10 @@ function Stop-Stream {
         $script:healthyTicks = 0
         $script:nextRetryAt = [DateTime]::MinValue
 
-        Stop-CloudflaredProcess
         Stop-FfmpegProcess
         Stop-MtxProcess
         Set-StreamState -State 'Stopped'
-        Write-DaemonLog -Level 'INFO' -Message 'Audio stream stopped.'
+        Write-DaemonLog -Level 'INFO' -Message 'Audio stream stopped (dashboard remains available).'
     }
     finally {
         $script:isTransitioning = $false
@@ -900,15 +1003,14 @@ function Set-CloudflaredEnabled {
     $script:config.network.cloudflared.enabled = $Enabled
     Save-MicStreamConfig -Config $script:config -ConfigPath $script:configPath
     Write-DaemonLog -Level 'INFO' -Message "Optional Cloudflare Tunnel set to $Enabled."
-    if ($script:desiredRunning) {
-        if ($Enabled) {
-            [void](Start-CloudflaredProcess)
-        }
-        else {
-            Stop-CloudflaredProcess
-        }
+    if ($Enabled) {
+        [void](Start-CloudflaredProcess)
+    }
+    else {
+        Stop-CloudflaredProcess
     }
     Update-AllUiState
+    Write-IpcState
 }
 
 # ==================== INDEPENDENT AUDIO RECORDING ====================
@@ -957,6 +1059,7 @@ function Start-AudioRecording {
         $limitMsg = if ($limitMinutes -gt 0) { "Auto-stop in $limitMinutes min." } else { 'Manual stop.' }
         Show-TrayNotification -Title 'Recording Started' -Text "$(Split-Path -Leaf $outFile)`n$limitMsg" -Icon ([System.Windows.Forms.ToolTipIcon]::Info) -TimeoutMs 2500
         Update-AllUiState
+        Write-IpcState
     }
     catch {
         Write-DaemonLog -Level 'ERROR' -Message "Failed to start recording: $($_.Exception.Message)"
@@ -998,6 +1101,7 @@ function Stop-AudioRecording {
         Show-TrayNotification -Title "Recording Saved ($Reason)" -Text "$leaf$sizeInfo" -Icon ([System.Windows.Forms.ToolTipIcon]::Info) -TimeoutMs 3500
     }
     Update-AllUiState
+    Write-IpcState
 }
 
 function Toggle-AudioRecording {
@@ -1019,6 +1123,110 @@ function Set-DefaultAutoStopMinutes {
     Write-DaemonLog -Level 'INFO' -Message "Recording auto-stop set to $Minutes minute(s)."
     Sync-PanelAutoStopSelection
     Update-AllUiState
+    Write-IpcState
+}
+
+function Invoke-IpcCommands {
+    $ipcDir = Get-IpcDirPath
+    $cmdFiles = @(Get-ChildItem -LiteralPath $ipcDir -Filter 'cmd_*.json' -ErrorAction SilentlyContinue | Sort-Object CreationTimeUtc)
+    if ($cmdFiles.Count -eq 0) { return }
+
+    foreach ($file in $cmdFiles) {
+        $cmdObj = $null
+        try {
+            $raw = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8
+            Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
+            if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+            $cmdObj = $raw | ConvertFrom-Json
+        }
+        catch {
+            continue
+        }
+
+        $resId = [string]$cmdObj.id
+        $action = [string]$cmdObj.action
+        $payload = $cmdObj.payload
+        $ok = $true
+        $errMsg = ''
+
+        try {
+            switch ($action) {
+                'start_stream' {
+                    Start-Stream
+                    if ($script:streamState -ne 'LIVE') {
+                        $ok = $false
+                        $errMsg = "Stream failed to start ($($script:streamDetail)). Check logs."
+                    }
+                }
+                'stop_stream' {
+                    Stop-Stream
+                }
+                'start_record' {
+                    $mins = $script:recAutoStopMinutes
+                    if ($null -ne $payload -and $null -ne $payload.PSObject.Properties['autoStopMinutes']) {
+                        $mins = [int]$payload.autoStopMinutes
+                        Set-DefaultAutoStopMinutes -Minutes $mins
+                    }
+                    Start-AudioRecording -OverrideAutoStopMinutes $mins
+                    if (-not $script:isRecording) {
+                        $ok = $false
+                        $errMsg = 'Recording failed to start. Check logs\recorder.log.'
+                    }
+                }
+                'stop_record' {
+                    Stop-AudioRecording -Reason 'Remote'
+                }
+                'set_autostop' {
+                    if ($null -ne $payload -and $null -ne $payload.PSObject.Properties['minutes']) {
+                        Set-DefaultAutoStopMinutes -Minutes ([int]$payload.minutes)
+                    }
+                }
+                'set_boost' {
+                    if ($null -ne $payload -and $null -ne $payload.PSObject.Properties['enabled']) {
+                        $en = [bool]$payload.enabled
+                        $script:config.audio.enableAmbientBoost = $en
+                        $script:boostItem.Checked = $en
+                        Save-MicStreamConfig -Config $script:config -ConfigPath $script:configPath
+                        Write-DaemonLog -Level 'INFO' -Message "Remote Ambient Boost set to $en."
+                        if ($script:desiredRunning) { Restart-FfmpegOnly }
+                    }
+                }
+                'set_microphone' {
+                    if ($null -ne $payload -and $null -ne $payload.PSObject.Properties['microphoneName']) {
+                        $mic = [string]$payload.microphoneName
+                        if (-not [string]::IsNullOrWhiteSpace($mic)) {
+                            $script:config.audio.microphoneName = $mic
+                            Save-MicStreamConfig -Config $script:config -ConfigPath $script:configPath
+                            Write-DaemonLog -Level 'INFO' -Message "Remote microphone switch to: $mic"
+                            if ($script:desiredRunning) { Restart-FfmpegOnly }
+                        }
+                    }
+                }
+                default {
+                    $ok = $false
+                    $errMsg = "Unknown IPC action: $action"
+                }
+            }
+        }
+        catch {
+            $ok = $false
+            $errMsg = $_.Exception.Message
+        }
+
+        Update-AllUiState
+        Write-IpcState
+
+        if (-not [string]::IsNullOrWhiteSpace($resId)) {
+            $resPath = Join-Path $ipcDir "res_${resId}.json"
+            $resTmp = "$resPath.tmp"
+            $resObj = [ordered]@{ ok = $ok; error = $errMsg }
+            try {
+                [System.IO.File]::WriteAllText($resTmp, ($resObj | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))
+                Move-Item -LiteralPath $resTmp -Destination $resPath -Force
+            }
+            catch { }
+        }
+    }
 }
 
 function Copy-BestStreamUrl {
@@ -1119,7 +1327,7 @@ function Initialize-ControlPanel {
     $btnCopyUrl.Add_Click({ Copy-BestStreamUrl })
 
     $script:chkCloudflared = New-Object System.Windows.Forms.CheckBox
-    $script:chkCloudflared.Text = 'Start Cloudflare Tunnel with stream (Optional)'
+    $script:chkCloudflared.Text = 'Enable Cloudflare Tunnel (Remote Dashboard Access)'
     $script:chkCloudflared.Location = New-Object System.Drawing.Point(16, 94)
     $script:chkCloudflared.Size = New-Object System.Drawing.Size(346, 22)
     $script:chkCloudflared.Add_CheckedChanged({
@@ -1210,28 +1418,37 @@ function Initialize-ControlPanel {
     $grpRec.Controls.AddRange(@($script:lblRecStatus, $lblAuto, $script:cmbAutoStop, $script:numCustomMin, $lblMinUnit, $script:btnRecToggle, $btnOpenRecs))
 
     # --- Bottom Bar ---
+    $btnWebUi = New-Object System.Windows.Forms.Button
+    $btnWebUi.Text = 'Web UI'
+    $btnWebUi.Location = New-Object System.Drawing.Point(14, 334)
+    $btnWebUi.Size = New-Object System.Drawing.Size(80, 30)
+    $btnWebUi.Add_Click({
+        $dashPort = [int]$script:config.dashboard.port
+        Start-Process "http://127.0.0.1:$dashPort"
+    })
+
     $btnLogs = New-Object System.Windows.Forms.Button
-    $btnLogs.Text = 'Open Logs'
-    $btnLogs.Location = New-Object System.Drawing.Point(14, 334)
-    $btnLogs.Size = New-Object System.Drawing.Size(100, 30)
+    $btnLogs.Text = 'Logs'
+    $btnLogs.Location = New-Object System.Drawing.Point(100, 334)
+    $btnLogs.Size = New-Object System.Drawing.Size(64, 30)
     $btnLogs.Add_Click({
         Start-Process -FilePath 'explorer.exe' -ArgumentList (Format-NativeArgument -Value (Get-LogDirPath))
     })
 
     $btnHide = New-Object System.Windows.Forms.Button
     $btnHide.Text = 'Hide to Tray'
-    $btnHide.Location = New-Object System.Drawing.Point(124, 334)
-    $btnHide.Size = New-Object System.Drawing.Size(112, 30)
+    $btnHide.Location = New-Object System.Drawing.Point(170, 334)
+    $btnHide.Size = New-Object System.Drawing.Size(96, 30)
     $btnHide.Add_Click({ $script:panelForm.Hide() })
 
     $btnExitAll = New-Object System.Windows.Forms.Button
     $btnExitAll.Text = 'Exit Completely'
-    $btnExitAll.Location = New-Object System.Drawing.Point(246, 334)
-    $btnExitAll.Size = New-Object System.Drawing.Size(144, 30)
+    $btnExitAll.Location = New-Object System.Drawing.Point(272, 334)
+    $btnExitAll.Size = New-Object System.Drawing.Size(118, 30)
     $btnExitAll.BackColor = [System.Drawing.Color]::MistyRose
     $btnExitAll.Add_Click({ Invoke-DaemonShutdown })
 
-    $form.Controls.AddRange(@($grpStream, $grpRec, $btnLogs, $btnHide, $btnExitAll))
+    $form.Controls.AddRange(@($grpStream, $grpRec, $btnWebUi, $btnLogs, $btnHide, $btnExitAll))
 
     $form.Add_FormClosing({
         param($sender, $e)
@@ -1272,6 +1489,8 @@ $script:statusItem.Enabled = $false
 
 $script:openPanelItem = $script:menu.Items.Add('Open Control Panel...')
 $script:openPanelItem.Font = New-Object System.Drawing.Font($script:openPanelItem.Font, [System.Drawing.FontStyle]::Bold)
+
+$script:openWebUiItem = $script:menu.Items.Add('Open Web Dashboard (Browser)')
 
 [void]$script:menu.Items.Add('-')
 
@@ -1365,6 +1584,7 @@ function Update-MicrophoneSubmenu {
                 $script:config.audio.microphoneName = $selectedMic
                 Save-MicStreamConfig -Config $script:config -ConfigPath $script:configPath
                 Write-DaemonLog -Level 'INFO' -Message "Switched microphone to: $selectedMic"
+                Write-IpcState
                 if ($script:desiredRunning) {
                     Restart-FfmpegOnly
                 }
@@ -1408,6 +1628,10 @@ $script:menu.Add_Opening({
 })
 
 $script:openPanelItem.Add_Click({ Show-ControlPanel })
+$script:openWebUiItem.Add_Click({
+    $dashPort = [int]$script:config.dashboard.port
+    Start-Process "http://127.0.0.1:$dashPort"
+})
 $script:startItem.Add_Click({ Start-Stream })
 $script:stopItem.Add_Click({ Stop-Stream })
 $script:cfToggleItem.Add_Click({ Set-CloudflaredEnabled -Enabled ([bool]$script:cfToggleItem.Checked) })
@@ -1420,6 +1644,7 @@ $script:boostItem.Add_Click({
     $script:config.audio.enableAmbientBoost = [bool]$script:boostItem.Checked
     Save-MicStreamConfig -Config $script:config -ConfigPath $script:configPath
     Write-DaemonLog -Level 'INFO' -Message "Ambient Boost set to $($script:config.audio.enableAmbientBoost)."
+    Write-IpcState
     if ($script:desiredRunning) {
         Restart-FfmpegOnly
     }
@@ -1457,9 +1682,9 @@ $script:trayIcon.Add_MouseClick({
 $script:trayIcon.ContextMenuStrip = $script:menu
 Set-StreamState -State 'Stopped'
 
-# ==================== 1-SECOND RECORDING & PANEL WAKEUP TIMER ====================
+# ==================== 250ms IPC, RECORDING & PANEL WAKEUP TIMER ====================
 $script:uiTickTimer = New-Object System.Windows.Forms.Timer
-$script:uiTickTimer.Interval = 500
+$script:uiTickTimer.Interval = 250
 $script:uiTickTimer.Add_Tick({
     if ($script:isShuttingDown) { return }
 
@@ -1470,6 +1695,14 @@ $script:uiTickTimer.Add_Tick({
         }
     }
     catch { }
+
+    # Process any queued Web Dashboard remote control commands
+    Invoke-IpcCommands
+
+    # Keep IPC state fresh every 5 seconds
+    if (((Get-Date) - $script:lastIpcWrite).TotalSeconds -ge 5) {
+        Write-IpcState
+    }
 
     # Monitor active recording process & auto-stop countdown
     if ($script:isRecording) {
@@ -1484,7 +1717,6 @@ $script:uiTickTimer.Add_Tick({
             Stop-AudioRecording -Reason $reason
         }
         elseif ($script:recActiveLimitMinutes -gt 0 -and $elapsed.TotalMinutes -ge ($script:recActiveLimitMinutes + 0.05)) {
-            # Safety backup if FFmpeg -t did not terminate on time
             Stop-AudioRecording -Reason "Auto-Stopped after $($script:recActiveLimitMinutes)m"
         }
         else {
@@ -1494,26 +1726,37 @@ $script:uiTickTimer.Add_Tick({
 })
 $script:uiTickTimer.Start()
 
-# ==================== STREAM WATCHDOG TIMER ====================
+# ==================== STREAM, DASHBOARD & TUNNEL WATCHDOG ====================
 $script:watchdog = New-Object System.Windows.Forms.Timer
 $script:watchdog.Interval = [int]$script:config.watchdog.intervalMs
 $script:watchdog.Add_Tick({
-    if (-not $script:desiredRunning -or $script:isTransitioning -or $script:isShuttingDown) {
+    if ($script:isShuttingDown) { return }
+
+    # Always keep Web Dashboard alive if enabled
+    if ([bool]$script:config.dashboard.enabled -and ($null -eq $script:dashProc -or $script:dashProc.HasExited)) {
+        Write-DaemonLog -Level 'WARN' -Message 'Web Dashboard server exited unexpectedly; restarting.'
+        Stop-DashboardProcess
+        [void](Start-DashboardProcess)
+        Write-IpcState
+    }
+
+    # Always keep optional Cloudflare Tunnel alive when enabled (so phone can control stream remotely anytime)
+    if ([bool]$script:config.network.cloudflared.enabled -and ($null -ne $script:cfProc) -and $script:cfProc.HasExited) {
+        Write-DaemonLog -Level 'WARN' -Message 'Optional cloudflared exited unexpectedly; attempting restart.'
+        Stop-CloudflaredProcess
+        [void](Start-CloudflaredProcess)
+        Update-AllUiState
+        Write-IpcState
+    }
+
+    if (-not $script:desiredRunning -or $script:isTransitioning) {
         return
     }
 
     $mtxDead = ($null -eq $script:mtxProc -or $script:mtxProc.HasExited)
     $ffDead  = ($null -eq $script:ffProc -or $script:ffProc.HasExited)
 
-    # Also auto-recover optional cloudflared if enabled and configured
     if (-not $mtxDead -and -not $ffDead) {
-        if ([bool]$script:config.network.cloudflared.enabled -and ($null -ne $script:cfProc) -and $script:cfProc.HasExited) {
-            Write-DaemonLog -Level 'WARN' -Message 'Optional cloudflared exited unexpectedly; attempting restart.'
-            Stop-CloudflaredProcess
-            [void](Start-CloudflaredProcess)
-            Update-AllUiState
-        }
-
         $script:healthyTicks++
         if ($script:healthyTicks -ge 2 -and $script:consecutiveFailures -gt 0) {
             $script:consecutiveFailures = 0
@@ -1535,7 +1778,6 @@ $script:watchdog.Add_Tick({
         if ($script:consecutiveFailures -gt $maxFailures) {
             Write-DaemonLog -Level 'ERROR' -Message "Watchdog exceeded max consecutive failures ($maxFailures). Pausing auto-recovery."
             $script:desiredRunning = $false
-            Stop-CloudflaredProcess
             Stop-FfmpegProcess
             Stop-MtxProcess
             Set-StreamState -State 'Error' -Detail 'Check Logs'
@@ -1560,9 +1802,6 @@ $script:watchdog.Add_Tick({
         }
 
         if ($recovered) {
-            if ([bool]$script:config.network.cloudflared.enabled -and ($null -eq $script:cfProc -or $script:cfProc.HasExited)) {
-                [void](Start-CloudflaredProcess)
-            }
             Set-StreamState -State 'LIVE'
             Write-DaemonLog -Level 'INFO' -Message 'Watchdog recovery succeeded.'
         }
@@ -1619,6 +1858,13 @@ function Invoke-DaemonShutdown {
     Stop-AudioRecording -Reason 'Shutdown'
     $script:isTransitioning = $false
     Stop-Stream
+    Stop-CloudflaredProcess
+    Stop-DashboardProcess
+    try {
+        $stFile = Join-Path (Get-IpcDirPath) 'state.json'
+        if (Test-Path -LiteralPath $stFile) { Remove-Item -LiteralPath $stFile -Force -ErrorAction SilentlyContinue }
+    }
+    catch { }
 
     try { [Microsoft.Win32.SystemEvents]::remove_SessionEnding($script:sessionEndingHandler) } catch { }
     try { $script:hotkeyMgr.Dispose() } catch { }
@@ -1657,6 +1903,17 @@ $script:sessionEndingHandler = [Microsoft.Win32.SessionEndingEventHandler]{
 }
 [Microsoft.Win32.SystemEvents]::add_SessionEnding($script:sessionEndingHandler)
 $script:exitItem.Add_Click({ Invoke-DaemonShutdown })
+
+# Start Web Dashboard & Optional Cloudflare Tunnel on daemon boot for anytime remote control
+Update-CachedMicrophones
+if ([bool]$script:config.dashboard.enabled) {
+    [void](Start-DashboardProcess)
+}
+if ([bool]$script:config.network.cloudflared.enabled) {
+    [void](Start-CloudflaredProcess)
+}
+Update-AllUiState
+Write-IpcState
 
 if ($ShowPanel) {
     Show-ControlPanel

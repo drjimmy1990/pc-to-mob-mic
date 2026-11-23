@@ -202,6 +202,16 @@ if (Test-Path -LiteralPath $mtxCfg) {
 
 Write-CheckResult -Status 'INFO' -Label 'Hotkeys' -Detail "Stream=$($config.hotkey.label), Record=$($config.recording.hotkey.label)"
 
+$nodeExe = Resolve-ExecutablePath -ConfiguredPath ([string]$config.dashboard.nodePath) -BaseDir $repoRoot
+$dashPort = [int]$config.dashboard.port
+if ($nodeExe) {
+    $nodeVer = (& $nodeExe -v 2>&1 | Select-Object -First 1)
+    Write-CheckResult -Status 'PASS' -Label 'Dashboard' -Detail "Node $nodeVer -> http://127.0.0.1:$dashPort (enabled=$($config.dashboard.enabled))"
+}
+else {
+    Write-CheckResult -Status 'WARN' -Label 'Dashboard' -Detail 'Node.js not found; Web Dashboard UI disabled'
+}
+
 Write-Host "`n--- Reachable Stream URLs ---" -ForegroundColor White
 $endpoints = Get-StreamEndpoints -Config $config -Adapters $adapters
 foreach ($ep in $endpoints) {

@@ -21,15 +21,20 @@ $ffRec = @(Get-CimInstance Win32_Process | Where-Object {
 $cf = @(Get-CimInstance Win32_Process | Where-Object {
     $_.Name -eq 'cloudflared.exe' -and ($_.ExecutablePath -like "$repoRoot*" -or $_.CommandLine -like '*--no-autoupdate*run*--token*')
 })
+$dash = @(Get-CimInstance Win32_Process | Where-Object {
+    $_.Name -eq 'node.exe' -and $_.CommandLine -like "*$repoRoot\dashboard\server.js*"
+})
 
 Write-Host '=== Live Process Status ===' -ForegroundColor White
 $trayText = if ($tray.Count -gt 0) { 'RUNNING (PID ' + (($tray.ProcessId) -join ',') + ')' } else { 'STOPPED' }
+$dashText = if ($dash.Count -gt 0) { 'RUNNING (PID ' + (($dash.ProcessId) -join ',') + ', http://127.0.0.1:8890)' } else { 'STOPPED' }
 $mtxText  = if ($mtx.Count -gt 0) { 'LIVE (PID ' + (($mtx.ProcessId) -join ',') + ')' } else { 'STOPPED' }
 $ffText   = if ($ffStream.Count -gt 0) { 'LIVE (PID ' + (($ffStream.ProcessId) -join ',') + ')' } else { 'STOPPED' }
 $recText  = if ($ffRec.Count -gt 0) { 'RECORDING (PID ' + (($ffRec.ProcessId) -join ',') + ')' } else { 'IDLE' }
 $cfText   = if ($cf.Count -gt 0) { 'CONNECTED (PID ' + (($cf.ProcessId) -join ',') + ')' } else { 'OFF' }
 
 Write-Host "  Tray Daemon : $trayText" -ForegroundColor $(if ($tray.Count -gt 0) { 'Green' } else { 'Gray' })
+Write-Host "  Dashboard   : $dashText" -ForegroundColor $(if ($dash.Count -gt 0) { 'Green' } else { 'Gray' })
 Write-Host "  MediaMTX    : $mtxText" -ForegroundColor $(if ($mtx.Count -gt 0) { 'Green' } else { 'Gray' })
 Write-Host "  FFmpeg Mic  : $ffText" -ForegroundColor $(if ($ffStream.Count -gt 0) { 'Green' } else { 'Gray' })
 Write-Host "  Recorder    : $recText" -ForegroundColor $(if ($ffRec.Count -gt 0) { 'Red' } else { 'Gray' })

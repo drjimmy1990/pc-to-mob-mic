@@ -229,6 +229,12 @@ function Get-DefaultMicStreamConfig {
             webrtcUdpPort = 8189
             streamPath    = 'mic'
         }
+        dashboard = [PSCustomObject]@{
+            enabled  = $true
+            host     = '0.0.0.0'
+            port     = 8890
+            nodePath = 'node'
+        }
         network = [PSCustomObject]@{
             autoFilterInterfaces     = $true
             excludeInterfacePatterns = @(

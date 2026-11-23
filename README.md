@@ -62,16 +62,20 @@ See [`vps/coturn/README.md`](vps/coturn/README.md) for full details and Cloudfla
 ### 2. Create a Cloudflare Named Tunnel
 In **Cloudflare Zero Trust -> Networks -> Tunnels -> Create a tunnel (Cloudflared)**:
 - Copy the tunnel token.
-- Add a **Public Hostname** route: `https://mic.yourdomain.com` -> `HTTP` -> `http://127.0.0.1:8889`.
+- Add a **Public Hostname** route: `https://mic.yourdomain.com` -> `HTTP` -> `http://localhost:8890` *(serves the Mobile Field-Recorder Web Dashboard, login screen, live WebRTC WHEP audio, remote recording + auto-stop, and laptop Recordings Vault)*.
 
 ### 3. Link Your Laptop
-Run **`5-Configure-Remote.bat`**, enter your tunnel URL, tunnel token, `turn:<VPS_IP>:3478`, and `$SECRET`, and let it install `cloudflared.exe`. Then check **Start Cloudflare Tunnel with stream (Optional)** in the Control Panel whenever you want remote access.
+Run **`5-Configure-Remote.bat`**, enter your tunnel URL, tunnel token, `turn:<VPS_IP>:3478`, and `$SECRET`, and let it install `cloudflared.exe`. Then check **Enable Cloudflare Tunnel (Remote Dashboard Access)** in the Control Panel whenever you want remote access.
 
 ---
 
 ## Testing & Documentation
-- Run automated unit tests:
+- Run PowerShell unit tests:
   ```powershell
   Invoke-Pester -Path ".\tests\MicStream.Core.Tests.ps1" -EnableExit
+  ```
+- Run Web Dashboard & WHEP proxy tests:
+  ```powershell
+  node --test .\dashboard\server.test.mjs
   ```
 - Full architecture diagrams, Tailscale guide, manual Windows Firewall / `shell:startup` / `powercfg` provisioning commands, and troubleshooting live in [`ARCHITECTURE.md`](ARCHITECTURE.md).

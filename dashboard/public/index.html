@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0B0D0C" />
+  <title>MICSTREAM // Field Audio Console</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="grain-overlay" aria-hidden="true"></div>
+
+  <!-- AUTH GATE -->
+  <main id="loginView" class="login-shell hidden" aria-label="Sign in">
+    <section class="login-deck">
+      <div class="deck-screws" aria-hidden="true">
+        <span></span><span></span>
+      </div>
+      <header class="brand-lockup">
+        <div class="brand-led"></div>
+        <div>
+          <p class="eyebrow">REMOTE AUDIO DECK</p>
+          <h1>MICSTREAM</h1>
+        </div>
+      </header>
+      <p class="login-sub">Authenticate with your MediaMTX listener credentials to access live monitoring, recording, and stored audio.</p>
+
+      <form id="loginForm" class="login-form" autocomplete="on">
+        <label class="field">
+          <span>OPERATOR ID</span>
+          <input id="loginUser" name="username" type="text" value="admin" autocomplete="username" required />
+        </label>
+        <label class="field">
+          <span>ACCESS KEY</span>
+          <input id="loginPass" name="password" type="password" placeholder="Enter stream password" autocomplete="current-password" required />
+        </label>
+        <p id="loginError" class="inline-error hidden" role="alert"></p>
+        <button id="loginBtn" type="submit" class="btn-primary-hw">UNLOCK CONSOLE</button>
+      </form>
+    </section>
+  </main>
+
+  <!-- MAIN FIELD CONSOLE -->
+  <div id="consoleView" class="console-shell hidden">
+    <header class="topbar">
+      <div class="topbar-left">
+        <span id="masterLed" class="status-led led-idle" aria-hidden="true"></span>
+        <div class="brand-compact">
+          <span class="brand-title">MICSTREAM</span>
+          <span id="hostSubtitle" class="brand-sub">FIELD CONSOLE</span>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <span id="iceBadge" class="telemetry-pill">STANDBY</span>
+        <button id="btnLogout" type="button" class="btn-ghost-sm" title="Sign out">LOCK</button>
+      </div>
+    </header>
+
+    <main class="rack-grid">
+      <!-- LEFT / PRIMARY COLUMN: MONITOR + RECORDING DECK -->
+      <div class="rack-primary">
+        <!-- OLED TELEMETRY + LIVE PLAYER -->
+        <section class="deck-module" aria-label="Live Monitor">
+          <div class="module-head">
+            <span class="module-tag">CH-01 // LIVE WEBRTC MONITOR</span>
+            <span id="streamStatePill" class="state-chip chip-off">HOST OFF</span>
+          </div>
+
+          <div class="oled-screen">
+            <div class="oled-top-row">
+              <div class="oled-readout">
+                <span class="oled-label">LINK</span>
+                <strong id="linkStatusText">DISCONNECTED</strong>
+              </div>
+              <div class="oled-readout align-right">
+                <span class="oled-label">PEAK LEVEL</span>
+                <strong id="dbReadout">-∞ dB</strong>
+              </div>
+            </div>
+
+            <canvas id="vuCanvas" class="vu-canvas" width="600" height="92" aria-label="Live audio spectrum"></canvas>
+
+            <div class="oled-bottom-row">
+              <span id="codecMeta">OPUS 48kHz MONO · LOWDELAY</span>
+              <span id="recOledStatus" class="rec-oled-idle">REC IDLE</span>
+            </div>
+          </div>
+
+          <!-- PRIMARY TRANSPORT BUTTONS -->
+          <div class="transport-row">
+            <button id="btnListen" type="button" class="btn-transport btn-listen">
+              <span class="btn-dot"></span>
+              <span id="btnListenLabel">TAP TO LISTEN</span>
+            </button>
+            <button id="btnHostStream" type="button" class="btn-transport btn-power">
+              <span id="btnHostStreamLabel">HOST MIC: OFF</span>
+            </button>
+          </div>
+
+          <!-- GAIN & OUTPUT FADER -->
+          <div class="fader-strip">
+            <div class="fader-head">
+              <label for="gainSlider">MONITOR GAIN BOOST</label>
+              <span id="gainValue" class="mono-val">100%</span>
+            </div>
+            <div class="fader-controls">
+              <button id="btnMute" type="button" class="btn-mini-toggle" aria-pressed="false">MUTE</button>
+              <input id="gainSlider" type="range" min="0" max="300" step="5" value="100" />
+              <button id="btnReconnect" type="button" class="btn-mini-toggle" title="Reconnect WebRTC">SYNC</button>
+            </div>
+          </div>
+
+          <audio id="liveAudio" playsinline autoplay></audio>
+        </section>
+
+        <!-- RECORDING & AUTO-STOP DECK -->
+        <section class="deck-module rec-module" aria-label="Audio Recorder">
+          <div class="module-head">
+            <span class="module-tag">CH-02 // LAPTOP RECORDER (MP3)</span>
+            <span id="recTimerChip" class="state-chip chip-off">IDLE</span>
+          </div>
+
+          <div class="rec-hero-row">
+            <button id="btnRecord" type="button" class="btn-rec-hw">
+              <span class="rec-tally" aria-hidden="true"></span>
+              <span id="btnRecordLabel">START RECORDING</span>
+            </button>
+          </div>
+
+          <div class="autostop-block">
+            <div class="autostop-head">
+              <span class="micro-label">AUTO-STOP TIMER</span>
+              <span id="autoStopSummary" class="mono-val">MANUAL</span>
+            </div>
+            <div id="autoStopPills" class="pill-grid" role="group" aria-label="Auto-stop duration presets">
+              <button type="button" class="pill-btn active" data-min="0">OFF</button>
+              <button type="button" class="pill-btn" data-min="5">5m</button>
+              <button type="button" class="pill-btn" data-min="10">10m</button>
+              <button type="button" class="pill-btn" data-min="15">15m</button>
+              <button type="button" class="pill-btn" data-min="30">30m</button>
+              <button type="button" class="pill-btn" data-min="60">1h</button>
+              <button type="button" class="pill-btn" data-min="120">2h</button>
+              <button type="button" class="pill-btn" data-min="custom">CUSTOM</button>
+            </div>
+            <div id="customMinWrap" class="custom-min-row hidden">
+              <label for="customMinutesInput">CUSTOM DURATION (MINUTES)</label>
+              <div class="custom-input-group">
+                <input id="customMinutesInput" type="number" min="1" max="1440" value="20" />
+                <button id="btnApplyCustomMin" type="button" class="btn-mini-toggle">SET</button>
+              </div>
+            </div>
+          </div>
+
+          <p class="storage-note">Files save directly to your Windows laptop (<code>d:\DEV\mic\recordings\</code>) — zero phone storage used until you download.</p>
+        </section>
+      </div>
+
+      <!-- RIGHT / SECONDARY COLUMN: HOST DSP + RECORDINGS VAULT -->
+      <div class="rack-secondary">
+        <!-- HOST AUDIO CONTROLS -->
+        <section class="deck-module" aria-label="Host Audio Controls">
+          <div class="module-head">
+            <span class="module-tag">DSP // LAPTOP INPUT CHAIN</span>
+            <span id="daemonPill" class="state-chip chip-live">SYNCED</span>
+          </div>
+
+          <div class="dsp-row">
+            <div class="dsp-info">
+              <strong>Ambient Room Boost</strong>
+              <span>100Hz high-pass + low-latency dynamic normalization</span>
+            </div>
+            <button id="btnBoostToggle" type="button" class="hw-switch" role="switch" aria-checked="true">
+              <span class="hw-switch-knob"></span>
+            </button>
+          </div>
+
+          <div class="dsp-select-block">
+            <label for="micSelect" class="micro-label">ACTIVE LAPTOP MICROPHONE</label>
+            <select id="micSelect" class="hw-select"></select>
+          </div>
+        </section>
+
+        <!-- RECORDINGS VAULT -->
+        <section class="deck-module vault-module" aria-label="Saved Recordings">
+          <div class="module-head">
+            <span class="module-tag">VAULT // LAPTOP RECORDINGS</span>
+            <div class="vault-head-right">
+              <span id="vaultMeta" class="mono-val">0 FILES</span>
+              <button id="btnRefreshVault" type="button" class="btn-mini-toggle">REFRESH</button>
+            </div>
+          </div>
+
+          <div id="vaultPlayerBar" class="vault-player hidden">
+            <div class="vault-player-head">
+              <span id="vaultPlayingName" class="mono-val"></span>
+              <button id="btnCloseVaultPlayer" type="button" class="btn-mini-toggle">CLOSE</button>
+            </div>
+            <audio id="vaultAudio" controls preload="metadata"></audio>
+          </div>
+
+          <div id="recordingsList" class="recordings-list">
+            <div class="empty-vault">No recordings yet. Press START RECORDING above to capture an MP3 on your laptop.</div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

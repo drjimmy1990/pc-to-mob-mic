@@ -23,6 +23,7 @@ if ($stopped -gt 0) {
 $childProcs = @(Get-CimInstance Win32_Process | Where-Object {
     ($_.Name -eq 'mediamtx.exe' -and $_.ExecutablePath -like "$repoRoot*") -or
     ($_.Name -eq 'cloudflared.exe' -and ($_.ExecutablePath -like "$repoRoot*" -or $_.CommandLine -like '*--no-autoupdate*run*--token*')) -or
+    ($_.Name -eq 'node.exe' -and $_.CommandLine -like "*$repoRoot\dashboard\server.js*") -or
     ($_.Name -eq 'ffmpeg.exe' -and ($_.CommandLine -like '*127.0.0.1:8554*' -or $_.CommandLine -like "*$repoRoot\recordings*"))
 })
 
